@@ -89,23 +89,57 @@ export function TerminalIsland() {
       });
       await term.open(ref.current!);
 
-      // Mouse, bracketed paste, focus, title, bell — all in one place.
-      detachBridge = attachBridge(term, ref.current!, (d) => {
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send(d);
-      });
+      // Wire-protocol envelope. Every WS frame in either direction is JSON.
+      type ClientMsg = { type: 'input'; value: string } | { type: 'resize'; cols: number; rows: number };
+      const sendMsg = (msg: ClientMsg) => {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+      };
 
-      // Compute cols/rows directly from container size — fitAddon ships its
-      // own 100ms ResizeObserver debounce *and* a 50ms `_isResizing` lockout,
-      // both of which make drag-resize feel like it stalls.
+      // Mouse, bracketed paste, focus, title, bell — all in one place.
+      detachBridge = attachBridge(term, ref.current!, (d) =>
+        sendMsg({ type: 'input', value: d })
+      );
+
+      // ACK-based resize. fit() sends the desired size; term.resize is only
+      // applied when the server has confirmed it. One in flight at a time so
+      // bash never sees a SIGWINCH storm.
+      let inFlightResize = false;
+      let desiredSize: { cols: number; rows: number } | null = null;
+      let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const sendNextResize = () => {
+        if (!desiredSize) return;
+        inFlightResize = true;
+        sendMsg({ type: 'resize', cols: desiredSize.cols, rows: desiredSize.rows });
+      };
+
+      const onAck = (cols: number, rows: number) => {
+        inFlightResize = false;
+        if (term && (cols !== term.cols || rows !== term.rows)) term.resize(cols, rows);
+        if (desiredSize && (desiredSize.cols !== cols || desiredSize.rows !== rows)) {
+          sendNextResize();
+        } else {
+          desiredSize = null;
+        }
+      };
+
       const fit = () => {
         if (!term || !ref.current) return;
         const m = term.renderer.getMetrics();
         if (!m.width || !m.height) return;
         const cols = Math.max(settings.minCols, Math.floor(ref.current.clientWidth / m.width));
         const rows = Math.max(settings.minRows, Math.floor(ref.current.clientHeight / m.height));
-        if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
+        if (cols === term.cols && rows === term.rows && !desiredSize) return;
+        desiredSize = { cols, rows };
+        if (!inFlightResize) sendNextResize();
+        if (settings.resizeAutoRedrawMs > 0) {
+          if (settleTimer) clearTimeout(settleTimer);
+          settleTimer = setTimeout(() => {
+            settleTimer = null;
+            sendMsg({ type: 'input', value: '\x0c' });
+          }, settings.resizeAutoRedrawMs);
+        }
       };
-      fit();
       ro = new ResizeObserver(fit);
       ro.observe(ref.current!);
 
@@ -125,8 +159,28 @@ export function TerminalIsland() {
           take = false;
         }
         ws = new WebSocket(`${proto}//${location.host}/ws?${params}`);
-        ws.onopen = () => setStatus({ kind: 'connected' });
-        ws.onmessage = (e) => term!.write(e.data);
+        ws.onopen = () => {
+          setStatus({ kind: 'connected' });
+          // Re-sync after (re)connect: resend the current desired size if any.
+          inFlightResize = false;
+          if (!desiredSize) fit();
+          else sendNextResize();
+        };
+        ws.onmessage = (e) => {
+          if (typeof e.data !== 'string') return;
+          try {
+            const m = JSON.parse(e.data);
+            if (m.type === 'data' && typeof m.value === 'string') {
+              term!.write(m.value);
+            } else if (
+              m.type === 'ack' &&
+              typeof m.cols === 'number' &&
+              typeof m.rows === 'number'
+            ) {
+              onAck(m.cols, m.rows);
+            }
+          } catch {}
+        };
         ws.onclose = (e) => {
           if (cancelled) return;
           if (e.code === 4002) {
@@ -151,35 +205,7 @@ export function TerminalIsland() {
       };
       connect();
 
-      term.onData((d) => {
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send(d);
-      });
-
-      let pendingSize: { cols: number; rows: number } | null = null;
-      let lastSent = 0;
-      let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-      let settleTimer: ReturnType<typeof setTimeout> | null = null;
-      const flushResize = () => {
-        resizeTimer = null;
-        if (!pendingSize || !ws || ws.readyState !== WebSocket.OPEN) return;
-        ws.send(JSON.stringify({ type: 'resize', ...pendingSize }));
-        pendingSize = null;
-        lastSent = performance.now();
-      };
-      term.onResize(({ cols, rows }) => {
-        pendingSize = { cols, rows };
-        if (!resizeTimer) {
-          const wait = Math.max(0, settings.resizeMinIntervalMs - (performance.now() - lastSent));
-          resizeTimer = setTimeout(flushResize, wait);
-        }
-        if (settings.resizeAutoRedrawMs > 0) {
-          if (settleTimer) clearTimeout(settleTimer);
-          settleTimer = setTimeout(() => {
-            settleTimer = null;
-            if (ws && ws.readyState === WebSocket.OPEN) ws.send('\x0c'); // ^L
-          }, settings.resizeAutoRedrawMs);
-        }
-      });
+      term.onData((d) => sendMsg({ type: 'input', value: d }));
     })();
 
     return () => {

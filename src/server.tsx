@@ -25,6 +25,18 @@ type Session = {
 
 const sessions = new Map<string, Session>();
 
+// Wire protocol — every WS frame in either direction is one of these JSON
+// envelopes. Lets us multiplex PTY bytes with control messages (resize ack,
+// future commands) without ambiguity.
+type ServerMsg = { type: 'data'; value: string } | { type: 'ack'; cols: number; rows: number };
+type ClientMsg = { type: 'input'; value: string } | { type: 'resize'; cols: number; rows: number };
+
+const sendMsg = (ws: AttachedWS | null, msg: ServerMsg) => {
+  try {
+    ws?.send(JSON.stringify(msg));
+  } catch {}
+};
+
 function createSession(id: string, cols: number, rows: number): Session {
   const decoder = new TextDecoder('utf-8');
   const s: Session = {
@@ -42,15 +54,13 @@ function createSession(id: string, cols: number, rows: number): Session {
         if (s.scrollback.length > SCROLLBACK_CAP) {
           s.scrollback = s.scrollback.slice(-SCROLLBACK_KEEP);
         }
-        try {
-          s.attached?.send(chunk);
-        } catch {}
+        sendMsg(s.attached, { type: 'data', value: chunk });
       },
     },
   });
   s.proc.exited.then(() => {
+    sendMsg(s.attached, { type: 'data', value: '\r\n\x1b[33mShell exited\x1b[0m\r\n' });
     try {
-      s.attached?.send('\r\n\x1b[33mShell exited\x1b[0m\r\n');
       s.attached?.close();
     } catch {}
     sessions.delete(id);
@@ -148,12 +158,14 @@ new Elysia({ websocket: { idleTimeout: 30 } })
         s.attached = ws;
         s.attachKey += 1;
         s.proc.terminal.resize(cols, rows);
-        if (s.scrollback) ws.send(s.scrollback);
+        if (s.scrollback) sendMsg(ws, { type: 'data', value: s.scrollback });
+        sendMsg(ws, { type: 'ack', cols, rows });
       } else {
         s = createSession(sessionId, cols, rows);
         sessions.set(sessionId, s);
         s.attached = ws;
         s.attachKey += 1;
+        sendMsg(ws, { type: 'ack', cols, rows });
       }
       const data = ws.data as { session?: Session; attachKey?: number };
       data.session = s;
@@ -163,24 +175,22 @@ new Elysia({ websocket: { idleTimeout: 30 } })
       const session = (ws.data as { session?: Session }).session;
       if (!session) return;
 
-      // Elysia auto-parses every incoming text frame as JSON: `"1"` arrives as
-      // the number 1, `'{"type":"resize",...}'` arrives as an object. Branch on
-      // the parsed shape instead of inspecting strings.
-      if (raw && typeof raw === 'object' && !(raw instanceof ArrayBuffer)) {
-        const m = raw as { type?: string; cols?: number; rows?: number };
-        if (m.type === 'resize' && typeof m.cols === 'number' && typeof m.rows === 'number') {
-          session.proc.terminal.resize(m.cols, m.rows);
-        }
-        return;
+      // Every client → server frame is a ClientMsg JSON envelope. Elysia
+      // already parses incoming text frames as JSON before we see them.
+      if (!raw || typeof raw !== 'object' || raw instanceof ArrayBuffer) return;
+      const m = raw as Partial<ClientMsg>;
+      if (m.type === 'input' && typeof m.value === 'string') {
+        session.proc.terminal.write(m.value);
+      } else if (
+        m.type === 'resize' &&
+        typeof m.cols === 'number' &&
+        typeof m.rows === 'number'
+      ) {
+        session.proc.terminal.resize(m.cols, m.rows);
+        // ACK so the client can reveal the new size to the local terminal
+        // only after bash has been told about it. Keeps canvas + bash in sync.
+        sendMsg(ws as AttachedWS, { type: 'ack', cols: m.cols, rows: m.rows });
       }
-
-      const text =
-        typeof raw === 'string'
-          ? raw
-          : raw instanceof ArrayBuffer
-            ? new TextDecoder().decode(raw)
-            : String(raw);
-      session.proc.terminal.write(text);
     },
     close(ws) {
       const data = ws.data as { session?: Session; attachKey?: number };
