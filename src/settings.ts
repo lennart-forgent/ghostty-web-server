@@ -29,4 +29,30 @@ export const settings = {
    */
   minCols: 20,
   minRows: 4,
+
+  // ─── Terminal ↔ browser interop ────────────────────────────────────────────
+  // All on by default. Toggle individually at compile time.
+
+  /** Forward mouse events (click/drag/wheel) to the PTY when the running
+   *  program enables tracking (btop, vim, fzf, opencode, htop). */
+  mouseEnabled: true,
+
+  /** Wrap pasted text with bracketed-paste markers (\e[200~ … \e[201~) when
+   *  the program enables `?2004h`. Stops bash from auto-running multi-line
+   *  pastes and lets editors detect paste vs typing. */
+  bracketedPasteEnabled: true,
+
+  /** Forward window focus/blur as `\e[I` / `\e[O` when the program enables
+   *  `?1004h`. vim `:set autoread`, tmux focus events. */
+  focusEventsEnabled: true,
+
+  /** Reflect terminal title escapes (`\e]0;…\a`) into document.title. */
+  setDocumentTitle: true,
+
+  /** Brief CSS flash on `\a`. */
+  visualBellEnabled: true,
+
+  /** Short 800 Hz beep on `\a` via Web Audio. Needs a prior user gesture
+   *  on the page (browser autoplay policy); silently no-ops before that. */
+  audibleBellEnabled: true,
 } as const;

@@ -14,6 +14,14 @@ html,body{margin:0;padding:0;height:100%;background:var(--bg);color:var(--fg);fo
 #terminal{width:100vw;height:100vh;height:100dvh}
 button{font:inherit;color:inherit}
 
+/* Bell flash — restartable by toggling the class. */
+.ghostty-bell-flash{animation:gpBell 180ms ease-out}
+@keyframes gpBell{
+  0%{box-shadow:inset 0 0 0 9999px rgba(255,255,255,0)}
+  40%{box-shadow:inset 0 0 0 9999px rgba(255,255,255,.07)}
+  100%{box-shadow:inset 0 0 0 9999px rgba(255,255,255,0)}
+}
+
 /* ---------- palette ---------- */
 .ghostty-palette{
   position:fixed;inset:0;z-index:1000;

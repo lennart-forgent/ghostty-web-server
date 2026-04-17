@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { setStatus } from '../status';
 import { switchSession } from '../session-commands';
 import { settings } from '../settings';
+import { attachBridge } from '../terminal-bridge';
 
 type GhosttyModule = {
   init: () => Promise<unknown>;
@@ -17,6 +18,11 @@ interface GhosttyTerminal {
   write(data: string): void;
   onData(cb: (data: string) => void): void;
   onResize(cb: (size: { cols: number; rows: number }) => void): void;
+  hasMouseTracking(): boolean;
+  hasBracketedPaste(): boolean;
+  hasFocusEvents(): boolean;
+  onTitleChange(cb: (title: string) => void): { dispose(): void };
+  onBell(cb: () => void): { dispose(): void };
   dispose?(): void;
 }
 
@@ -55,6 +61,7 @@ export function TerminalIsland() {
     let take = consumeTakeFlag();
     let reconnectTimer: ReturnType<typeof setInterval> | undefined;
     let ro: ResizeObserver | undefined;
+    let detachBridge: (() => void) | undefined;
 
     (async () => {
       const url = `${location.origin}/dist/ghostty-web.js`;
@@ -70,6 +77,11 @@ export function TerminalIsland() {
         theme: { background: '#1e1e1e', foreground: '#d4d4d4' },
       });
       await term.open(ref.current!);
+
+      // Mouse, bracketed paste, focus, title, bell — all in one place.
+      detachBridge = attachBridge(term, ref.current!, (d) => {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(d);
+      });
 
       // Compute cols/rows directly from container size — fitAddon ships its
       // own 100ms ResizeObserver debounce *and* a 50ms `_isResizing` lockout,
@@ -162,6 +174,7 @@ export function TerminalIsland() {
     return () => {
       cancelled = true;
       if (reconnectTimer) clearInterval(reconnectTimer);
+      detachBridge?.();
       ro?.disconnect();
       ws?.close();
       term?.dispose?.();
