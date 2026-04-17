@@ -5,23 +5,18 @@ import { switchSession } from '../session-commands';
 type GhosttyModule = {
   init: () => Promise<unknown>;
   Terminal: new (opts: Record<string, unknown>) => GhosttyTerminal;
-  FitAddon: new () => GhosttyFitAddon;
 };
 
 interface GhosttyTerminal {
   cols: number;
   rows: number;
-  loadAddon(addon: GhosttyFitAddon): void;
+  renderer: { getMetrics(): { width: number; height: number } };
   open(el: HTMLElement): Promise<void>;
+  resize(cols: number, rows: number): void;
   write(data: string): void;
   onData(cb: (data: string) => void): void;
   onResize(cb: (size: { cols: number; rows: number }) => void): void;
   dispose?(): void;
-}
-
-interface GhosttyFitAddon {
-  fit(): void;
-  observeResize(): void;
 }
 
 // RFC4122 v4 via getRandomValues, which (unlike crypto.randomUUID) works on
@@ -58,10 +53,11 @@ export function TerminalIsland() {
     let term: GhosttyTerminal | undefined;
     let take = consumeTakeFlag();
     let reconnectTimer: ReturnType<typeof setInterval> | undefined;
+    let ro: ResizeObserver | undefined;
 
     (async () => {
       const url = `${location.origin}/dist/ghostty-web.js`;
-      const { init, Terminal, FitAddon } = (await import(/* @vite-ignore */ url)) as GhosttyModule;
+      const { init, Terminal } = (await import(/* @vite-ignore */ url)) as GhosttyModule;
       if (cancelled) return;
 
       await init();
@@ -72,11 +68,22 @@ export function TerminalIsland() {
         fontSize: 14,
         theme: { background: '#1e1e1e', foreground: '#d4d4d4' },
       });
-      const fitAddon = new FitAddon();
-      term.loadAddon(fitAddon);
       await term.open(ref.current!);
-      fitAddon.fit();
-      fitAddon.observeResize();
+
+      // Compute cols/rows directly from container size — fitAddon ships its
+      // own 100ms ResizeObserver debounce *and* a 50ms `_isResizing` lockout,
+      // both of which make drag-resize feel like it stalls.
+      const fit = () => {
+        if (!term || !ref.current) return;
+        const m = term.renderer.getMetrics();
+        if (!m.width || !m.height) return;
+        const cols = Math.max(1, Math.floor(ref.current.clientWidth / m.width));
+        const rows = Math.max(1, Math.floor(ref.current.clientHeight / m.height));
+        if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
+      };
+      fit();
+      ro = new ResizeObserver(fit);
+      ro.observe(ref.current!);
 
       const sessionId = getSessionId();
 
@@ -123,6 +130,7 @@ export function TerminalIsland() {
       term.onData((d) => {
         if (ws && ws.readyState === WebSocket.OPEN) ws.send(d);
       });
+
       term.onResize(({ cols, rows }) => {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'resize', cols, rows }));
@@ -133,6 +141,7 @@ export function TerminalIsland() {
     return () => {
       cancelled = true;
       if (reconnectTimer) clearInterval(reconnectTimer);
+      ro?.disconnect();
       ws?.close();
       term?.dispose?.();
     };
