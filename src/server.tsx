@@ -4,6 +4,7 @@ import { App } from './components/App';
 import { activeProcess } from './active-process';
 import ghosttyJs from '../node_modules/ghostty-web/dist/ghostty-web.js' with { type: 'file' };
 import wasm from '../node_modules/ghostty-web/ghostty-vt.wasm' with { type: 'file' };
+import favicon from '../assets/favicon.ico' with { type: 'file' };
 
 const PORT = Number(process.env.PORT ?? 8080);
 const HTML = '<!doctype html>' + renderToString(<App />);
@@ -104,7 +105,7 @@ new Elysia({ websocket: { idleTimeout: 30 } })
   .get('/client.js', () => clientResponse())
   .get('/dist/ghostty-web.js', () => file(ghosttyJs, 'text/javascript'))
   .get('/ghostty-vt.wasm', () => file(wasm, 'application/wasm'))
-  .get('/favicon.ico', () => new Response(null, { status: 204 }))
+  .get('/favicon.ico', () => file(favicon, 'image/vnd.microsoft.icon'))
   // Empty-module fallback for stale Vite "__vite-browser-external-*.js" stubs
   // that ghostty-web's published bundle occasionally references.
   .get('/dist/*', () => new Response('export {};', { headers: { 'content-type': 'text/javascript' } }))
