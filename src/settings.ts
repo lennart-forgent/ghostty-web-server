@@ -7,14 +7,15 @@ export const settings = {
 
   /**
    * After the user stops resizing for this many ms, send Ctrl+L so bash
-   * repaints the prompt from scratch. Cleans up the prompt-redraw artifacts
-   * bash's readline leaves behind during a fast drag (native Ghostty avoids
-   * them via OS-level SIGWINCH coalescing, which doesn't replicate over the
-   * network).
+   * repaints the prompt from scratch. Cleans up prompt-redraw artifacts a
+   * fast drag can leave behind, but the trade-off is that ^L wipes the
+   * visible screen (history is preserved in scrollback, but you lose what
+   * was on screen).
    *
-   * Set to 0 to disable.
+   * Off by default — bash's own SIGWINCH redraw handles most cases. Set
+   * to a positive ms value to re-enable.
    */
-  resizeAutoRedrawMs: 200,
+  resizeAutoRedrawMs: 0,
 
   /**
    * Minimum interval between WebSocket resize messages while the user is
