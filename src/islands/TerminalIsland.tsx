@@ -22,6 +22,21 @@ interface GhosttyFitAddon {
   observeResize(): void;
 }
 
+function getSessionId(): string {
+  let id = sessionStorage.getItem('ghosttySessionId');
+  if (!id) {
+    id = crypto.randomUUID();
+    sessionStorage.setItem('ghosttySessionId', id);
+  }
+  return id;
+}
+
+function consumeTakeFlag(): boolean {
+  const taken = sessionStorage.getItem('ghosttyTake') === '1';
+  if (taken) sessionStorage.removeItem('ghosttyTake');
+  return taken;
+}
+
 export function TerminalIsland() {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -29,9 +44,9 @@ export function TerminalIsland() {
     let cancelled = false;
     let ws: WebSocket | undefined;
     let term: GhosttyTerminal | undefined;
+    let take = consumeTakeFlag();
 
     (async () => {
-      // Runtime URL — built outside of bundler awareness so the path stays a literal HTTP fetch.
       const url = `${location.origin}/dist/ghostty-web.js`;
       const { init, Terminal, FitAddon } = (await import(/* @vite-ignore */ url)) as GhosttyModule;
       if (cancelled) return;
@@ -50,13 +65,28 @@ export function TerminalIsland() {
       fitAddon.fit();
       fitAddon.observeResize();
 
+      const sessionId = getSessionId();
+
       const connect = () => {
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(
-          `${proto}//${location.host}/ws?cols=${term!.cols}&rows=${term!.rows}`
-        );
+        const params = new URLSearchParams({
+          sessionId,
+          cols: String(term!.cols),
+          rows: String(term!.rows),
+        });
+        if (take) {
+          params.set('take', '1');
+          take = false;
+        }
+        ws = new WebSocket(`${proto}//${location.host}/ws?${params}`);
         ws.onmessage = (e) => term!.write(e.data);
-        ws.onclose = () => {
+        ws.onclose = (e) => {
+          if (e.code === 4002) {
+            term!.write(
+              '\r\n\x1b[31mSession is attached in another tab. Press Cmd/Ctrl+K to take it.\x1b[0m\r\n'
+            );
+            return;
+          }
           term!.write('\r\n\x1b[31mConnection closed. Reconnecting in 2s...\x1b[0m\r\n');
           setTimeout(connect, 2000);
         };
