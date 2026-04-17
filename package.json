@@ -11,10 +11,9 @@
     "README.md"
   ],
   "scripts": {
-    "dev": "bun scripts/dev.ts",
-    "build:client": "bun build src/client.tsx --outdir dist --target browser --minify",
-    "build": "bun run build:client && bun build src/server.tsx --outdir dist --target bun --minify && bun scripts/postbuild.ts",
-    "build:bin": "bun run build:client && bun build --compile --minify --bytecode --target=${TARGET:-bun} src/server.tsx --outfile ${OUTFILE:-dist/ghostty-web-server}",
+    "dev": "bun --hot src/server.tsx",
+    "build": "bun build src/client.tsx --outdir dist --target browser --minify --define 'process.env.NODE_ENV=\"production\"' && bun build src/server.tsx --outdir dist --target bun --minify --define 'process.env.NODE_ENV=\"production\"' && bun scripts/postbuild.ts",
+    "build:bin": "bun build src/client.tsx --outdir dist --target browser --minify --define 'process.env.NODE_ENV=\"production\"' && bun build --compile --minify --bytecode --define 'process.env.NODE_ENV=\"production\"' --target=${TARGET:-bun} src/server.tsx --outfile ${OUTFILE:-dist/ghostty-web-server}",
     "build:bin:linux-x64": "TARGET=bun-linux-x64 OUTFILE=dist/ghostty-web-server-linux-x64 bun run build:bin",
     "build:bin:linux-arm64": "TARGET=bun-linux-arm64 OUTFILE=dist/ghostty-web-server-linux-arm64 bun run build:bin",
     "build:bin:darwin-arm64": "TARGET=bun-darwin-arm64 OUTFILE=dist/ghostty-web-server-darwin-arm64 bun run build:bin",

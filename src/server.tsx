@@ -1,7 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { renderToString } from 'preact-render-to-string';
 import { App } from './components/App';
-import clientJs from '../dist/client.js' with { type: 'file' };
 import ghosttyJs from '../node_modules/ghostty-web/dist/ghostty-web.js' with { type: 'file' };
 import wasm from '../node_modules/ghostty-web/ghostty-vt.wasm' with { type: 'file' };
 
@@ -15,9 +14,50 @@ const resolve = (p: string) =>
 const file = (path: string, type: string) =>
   new Response(Bun.file(resolve(path)), { headers: { 'content-type': type } });
 
+// `--define 'process.env.NODE_ENV="production"'` folds these checks at build
+// time, so the dev branch (Bun.build, dynamic imports of client.tsx) is dead
+// code in the npm bundle and the --compile binary. Verified post-build.
+let clientCache: string | null = null;
+const clientResponse = async () => {
+  if (clientCache === null) {
+    if (process.env.NODE_ENV !== 'production') {
+      const built = await Bun.build({
+        entrypoints: [`${import.meta.dir}/client.tsx`],
+        target: 'browser',
+        sourcemap: 'inline',
+      });
+      if (!built.success) {
+        return new Response(
+          '// build failed:\n' + built.logs.map((l) => String(l.message)).join('\n'),
+          { status: 500, headers: { 'content-type': 'text/javascript' } }
+        );
+      }
+      clientCache = await built.outputs[0].text();
+    } else {
+      const m = await import('../dist/client.js', { with: { type: 'file' } });
+      clientCache = await Bun.file(resolve(m.default as string)).text();
+    }
+  }
+  return new Response(clientCache, { headers: { 'content-type': 'text/javascript' } });
+};
+
+if (process.env.NODE_ENV !== 'production') {
+  // Anchor src/client.tsx in the dev import graph so `--hot` reloads pick up
+  // edits to it and its deps. Fire-and-forget — top-level await isn't allowed
+  // by `bun build --compile`. Dynamic template-string is invisible to the
+  // bundler so the npm-bundle and binary don't pull client.tsx in.
+  import(`${import.meta.dir}/client.tsx`).catch(() => {});
+
+  if (import.meta.hot) {
+    import.meta.hot.accept(() => {
+      clientCache = null;
+    });
+  }
+}
+
 new Elysia({ websocket: { idleTimeout: 0 } })
   .get('/', () => html(HTML))
-  .get('/client.js', () => file(clientJs, 'text/javascript'))
+  .get('/client.js', () => clientResponse())
   .get('/dist/ghostty-web.js', () => file(ghosttyJs, 'text/javascript'))
   .get('/ghostty-vt.wasm', () => file(wasm, 'application/wasm'))
   .ws('/ws', {
