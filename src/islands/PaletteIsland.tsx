@@ -1,35 +1,15 @@
-import { useEffect, useState } from 'preact/hooks';
-
-type SessionRow = {
-  id: string;
-  startedAt: number;
-  attached: boolean;
-  activeProcess: string;
-};
-
-function relTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const s = Math.round(diff / 1000);
-  if (s < 5) return 'just now';
-  if (s < 60) return `${s}s ago`;
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.round(h / 24)}d ago`;
-}
-
-function switchSession(id: string, take = false) {
-  sessionStorage.setItem('ghosttySessionId', id);
-  if (take) sessionStorage.setItem('ghosttyTake', '1');
-  location.reload();
-}
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { loadCommands, type Command } from '../palette';
 
 export function PaletteIsland() {
   const [open, setOpen] = useState(false);
-  const [rows, setRows] = useState<SessionRow[]>([]);
-  const [currentId, setCurrentId] = useState<string>('');
+  const [commands, setCommands] = useState<Command[]>([]);
+  const [query, setQuery] = useState('');
+  const [selected, setSelected] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
 
+  // Cmd/Ctrl+K toggles, Esc closes — listened with capture so the terminal
+  // doesn't swallow the keystroke.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -46,17 +26,16 @@ export function PaletteIsland() {
     return () => document.removeEventListener('keydown', onKey, { capture: true });
   }, [open]);
 
+  // Load + poll commands while open.
   useEffect(() => {
     if (!open) return;
-    setCurrentId(sessionStorage.getItem('ghosttySessionId') ?? '');
+    setQuery('');
+    setSelected(0);
     let cancelled = false;
-    const refresh = () =>
-      fetch('/api/sessions')
-        .then((r) => r.json())
-        .then((data: { sessions: SessionRow[] }) => {
-          if (!cancelled) setRows(data.sessions);
-        })
-        .catch(() => {});
+    const refresh = async () => {
+      const list = await loadCommands();
+      if (!cancelled) setCommands(list);
+    };
     refresh();
     const id = setInterval(refresh, 2000);
     return () => {
@@ -65,69 +44,120 @@ export function PaletteIsland() {
     };
   }, [open]);
 
+  // Focus the search box on open.
+  useEffect(() => {
+    if (open) requestAnimationFrame(() => inputRef.current?.focus());
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return commands;
+    return commands.filter((c) =>
+      [c.label, c.detail, c.hint, c.group].filter(Boolean).join(' ').toLowerCase().includes(q)
+    );
+  }, [commands, query]);
+
+  // Keep selection in range as the filtered list shrinks/grows.
+  useEffect(() => {
+    if (selected >= filtered.length) setSelected(Math.max(0, filtered.length - 1));
+  }, [filtered, selected]);
+
+  const move = (delta: number) => {
+    if (filtered.length === 0) return;
+    let next = selected;
+    for (let i = 0; i < filtered.length; i += 1) {
+      next = (next + delta + filtered.length) % filtered.length;
+      if (!filtered[next].disabled) break;
+    }
+    setSelected(next);
+  };
+
+  const invoke = async (cmd: Command | undefined) => {
+    if (!cmd || cmd.disabled) return;
+    setOpen(false);
+    await cmd.onSelect();
+  };
+
+  const onInputKey = (e: KeyboardEvent) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      move(1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      move(-1);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      invoke(filtered[selected]);
+    }
+  };
+
   if (!open) return null;
 
-  const orphans = rows.filter((r) => !r.attached);
-  const others = rows.filter((r) => r.attached && r.id !== currentId);
-  const current = rows.find((r) => r.id === currentId);
+  // Group rows for rendering while preserving global selection index.
+  const groups: { label: string; items: { cmd: Command; idx: number }[] }[] = [];
+  filtered.forEach((cmd, idx) => {
+    const label = cmd.group ?? '';
+    let bucket = groups.find((g) => g.label === label);
+    if (!bucket) {
+      bucket = { label, items: [] };
+      groups.push(bucket);
+    }
+    bucket.items.push({ cmd, idx });
+  });
 
   return (
     <div class="ghostty-palette" onClick={() => setOpen(false)}>
       <div class="ghostty-palette-card" onClick={(e) => e.stopPropagation()}>
-        <div class="ghostty-palette-header">Sessions</div>
-
-        {orphans.length > 0 && (
-          <div class="ghostty-palette-group">
-            <div class="ghostty-palette-group-label">Orphan</div>
-            {orphans.map((r) => (
-              <button
-                key={r.id}
-                class="ghostty-palette-row ghostty-palette-clickable"
-                onClick={() => switchSession(r.id)}
-              >
-                <span class="ghostty-palette-id">{r.id.slice(0, 8)}</span>
-                <span class="ghostty-palette-meta">{relTime(r.startedAt)}</span>
-                <span class="ghostty-palette-proc">{r.activeProcess}</span>
-                <span class="ghostty-palette-action">⏎ switch</span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {current && (
-          <div class="ghostty-palette-group">
-            <div class="ghostty-palette-group-label">Current</div>
-            <div class="ghostty-palette-row">
-              <span class="ghostty-palette-id">{current.id.slice(0, 8)}</span>
-              <span class="ghostty-palette-meta">{relTime(current.startedAt)}</span>
-              <span class="ghostty-palette-proc">{current.activeProcess}</span>
-              <span class="ghostty-palette-action">this tab</span>
+        <div class="ghostty-palette-search">
+          <span class="ghostty-palette-search-icon">›</span>
+          <input
+            ref={inputRef}
+            type="text"
+            placeholder="Search commands…"
+            value={query}
+            onInput={(e) => {
+              setQuery((e.target as HTMLInputElement).value);
+              setSelected(0);
+            }}
+            onKeyDown={onInputKey}
+            spellcheck={false}
+            autocomplete="off"
+          />
+        </div>
+        <div class="ghostty-palette-list">
+          {groups.length === 0 && <div class="ghostty-palette-empty">No matches</div>}
+          {groups.map((g) => (
+            <div key={g.label} class="ghostty-palette-group">
+              {g.label && <div class="ghostty-palette-group-label">{g.label}</div>}
+              {g.items.map(({ cmd, idx }) => {
+                const cls = [
+                  'ghostty-palette-row',
+                  idx === selected ? 'ghostty-palette-row-selected' : '',
+                  cmd.disabled ? 'ghostty-palette-row-disabled' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ');
+                return (
+                  <div
+                    key={cmd.id}
+                    class={cls}
+                    onMouseEnter={() => !cmd.disabled && setSelected(idx)}
+                    onClick={() => invoke(cmd)}
+                  >
+                    <span class="ghostty-palette-label">{cmd.label}</span>
+                    {cmd.detail && <span class="ghostty-palette-detail">{cmd.detail}</span>}
+                    {cmd.hint && <span class="ghostty-palette-hint-cell">{cmd.hint}</span>}
+                  </div>
+                );
+              })}
             </div>
-          </div>
-        )}
-
-        {others.length > 0 && (
-          <div class="ghostty-palette-group">
-            <div class="ghostty-palette-group-label">Other tabs</div>
-            {others.map((r) => (
-              <div key={r.id} class="ghostty-palette-row">
-                <span class="ghostty-palette-id">{r.id.slice(0, 8)}</span>
-                <span class="ghostty-palette-meta">{relTime(r.startedAt)}</span>
-                <span class="ghostty-palette-proc">{r.activeProcess}</span>
-                <button
-                  class="ghostty-palette-take"
-                  onClick={() => switchSession(r.id, true)}
-                >
-                  Take
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {rows.length === 0 && <div class="ghostty-palette-empty">No sessions</div>}
-
-        <div class="ghostty-palette-hint">⌘K to toggle · Esc to close</div>
+          ))}
+        </div>
+        <div class="ghostty-palette-footer">
+          <span>↑↓ navigate</span>
+          <span>⏎ select</span>
+          <span>esc close</span>
+        </div>
       </div>
     </div>
   );

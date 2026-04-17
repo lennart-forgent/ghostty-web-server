@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'preact/hooks';
+import { setStatus } from '../status';
+import { switchSession } from '../session-commands';
 
 type GhosttyModule = {
   init: () => Promise<unknown>;
@@ -55,6 +57,7 @@ export function TerminalIsland() {
     let ws: WebSocket | undefined;
     let term: GhosttyTerminal | undefined;
     let take = consumeTakeFlag();
+    let reconnectTimer: ReturnType<typeof setInterval> | undefined;
 
     (async () => {
       const url = `${location.origin}/dist/ghostty-web.js`;
@@ -78,6 +81,8 @@ export function TerminalIsland() {
       const sessionId = getSessionId();
 
       const connect = () => {
+        if (cancelled) return;
+        setStatus({ kind: 'connecting' });
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const params = new URLSearchParams({
           sessionId,
@@ -89,16 +94,28 @@ export function TerminalIsland() {
           take = false;
         }
         ws = new WebSocket(`${proto}//${location.host}/ws?${params}`);
+        ws.onopen = () => setStatus({ kind: 'connected' });
         ws.onmessage = (e) => term!.write(e.data);
         ws.onclose = (e) => {
+          if (cancelled) return;
           if (e.code === 4002) {
-            term!.write(
-              '\r\n\x1b[31mSession is attached in another tab. Press Cmd/Ctrl+K to take it.\x1b[0m\r\n'
-            );
+            setStatus({
+              kind: 'busy',
+              onTake: () => switchSession(sessionId, true),
+            });
             return;
           }
-          term!.write('\r\n\x1b[31mConnection closed. Reconnecting in 2s...\x1b[0m\r\n');
-          setTimeout(connect, 2000);
+          let n = 2;
+          setStatus({ kind: 'reconnecting', in: n });
+          reconnectTimer = setInterval(() => {
+            n -= 1;
+            if (n <= 0) {
+              clearInterval(reconnectTimer);
+              connect();
+            } else {
+              setStatus({ kind: 'reconnecting', in: n });
+            }
+          }, 1000);
         };
       };
       connect();
@@ -115,6 +132,7 @@ export function TerminalIsland() {
 
     return () => {
       cancelled = true;
+      if (reconnectTimer) clearInterval(reconnectTimer);
       ws?.close();
       term?.dispose?.();
     };
