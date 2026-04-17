@@ -52,9 +52,11 @@ export const settings = {
   /** Brief CSS flash on `\a`. */
   visualBellEnabled: true,
 
-  /** Short 800 Hz beep on `\a` via Web Audio. Off by default — many TUIs
-   *  (opencode, vim with errorbells) ring the bell at intervals that aren't
-   *  bursty enough for rate-limiting to help, and an audio bell every few
-   *  seconds gets old fast. Flip to true if you want it. */
-  audibleBellEnabled: false,
+  /** Short 800 Hz beep on `\a` via Web Audio. Needs a prior user gesture
+   *  (browser autoplay policy); silently no-ops before that. */
+  audibleBellEnabled: true,
+
+  /** Log "ding" to the browser console on every bell. Useful when you suspect
+   *  the visual/audible bell isn't firing. */
+  debugBellEnabled: true,
 } as const;

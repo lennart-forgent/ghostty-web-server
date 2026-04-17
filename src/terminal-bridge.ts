@@ -147,8 +147,8 @@ export function attachBridge(
     teardown.push(() => sub.dispose());
   }
 
-  // ─── Bell (visual + audible) ───────────────────────────────────────────────
-  if (settings.visualBellEnabled || settings.audibleBellEnabled) {
+  // ─── Bell (visual + audible + debug) ───────────────────────────────────────
+  if (settings.visualBellEnabled || settings.audibleBellEnabled || settings.debugBellEnabled) {
     let audioCtx: AudioContext | null = null;
     const beep = () => {
       try {
@@ -180,6 +180,7 @@ export function attachBridge(
         container.classList.add('ghostty-bell-flash');
       }
       if (settings.audibleBellEnabled) beep();
+      if (settings.debugBellEnabled) console.log('ding');
     });
     teardown.push(() => sub.dispose());
   }
