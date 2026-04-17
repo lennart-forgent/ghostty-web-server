@@ -22,6 +22,7 @@ interface TerminalApi {
   hasFocusEvents(): boolean;
   onTitleChange(cb: (title: string) => void): Disposable;
   onBell(cb: () => void): Disposable;
+  write(data: string): void;
   renderer: { getMetrics(): { width: number; height: number } };
   /** Returning true tells the lib to skip its built-in scroll / arrow-key
    *  behavior — we use this when the program has mouse tracking enabled. */
@@ -34,6 +35,24 @@ export function attachBridge(
   send: (data: string) => void
 ): () => void {
   const teardown: (() => void)[] = [];
+
+  // ─── Bell false-positive guard ─────────────────────────────────────────────
+  // ghostty-web fires its bell event whenever a write contains 0x07, which
+  // also happens to be the terminator for OSC sequences (e.g. the `\e]0;…\a`
+  // that bash emits on every prompt to set the window title). Patch
+  // term.write to remember whether the last write also contained `\e]` — if
+  // it did, the bell event we're about to receive is almost certainly the
+  // OSC terminator, not a real bell.
+  let lastWriteWasRealBell = false;
+  const origWrite = term.write.bind(term);
+  term.write = (data: string) => {
+    lastWriteWasRealBell =
+      typeof data === 'string' && data.includes('\x07') && !data.includes('\x1b]');
+    return origWrite(data);
+  };
+  teardown.push(() => {
+    term.write = origWrite;
+  });
 
   // ─── Mouse ─────────────────────────────────────────────────────────────────
   if (settings.mouseEnabled) {
@@ -171,6 +190,8 @@ export function attachBridge(
     // burst.
     let lastBellAt = 0;
     const sub = term.onBell(() => {
+      if (!lastWriteWasRealBell) return; // OSC-terminator false positive
+      lastWriteWasRealBell = false;
       const now = performance.now();
       if (now - lastBellAt < 250) return;
       lastBellAt = now;
