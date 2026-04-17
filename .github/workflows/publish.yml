@@ -1,0 +1,107 @@
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write # Required for creating GitHub releases
+  id-token: write # Required for OIDC trusted publishing
+
+jobs:
+  publish:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0 # Required for git describe to find tags
+
+      - name: Setup Node.js for npm
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Ensure npm 11.5.1 or later for trusted publishing
+      - run: npm install -g npm@latest
+
+      - name: Detect trigger type
+        id: detect
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            echo "is_tag=true" >> $GITHUB_OUTPUT
+            echo "trigger_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            echo "📦 Detected tag push: ${GITHUB_REF#refs/tags/}"
+          else
+            echo "is_tag=false" >> $GITHUB_OUTPUT
+            echo "trigger_name=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+            echo "🚧 Detected manual dispatch on: ${GITHUB_REF#refs/heads/}"
+          fi
+
+      - name: Generate version
+        id: version
+        run: |
+          if [[ "${{ steps.detect.outputs.is_tag }}" == "true" ]]; then
+            NPM_VERSION="${GITHUB_REF#refs/tags/v}"
+            NPM_TAG="latest"
+            echo "📦 Publishing stable release: ${NPM_VERSION}"
+          else
+            LATEST_TAG=$(git describe --tags --abbrev=0)
+            BASE_VERSION="${LATEST_TAG#v}"
+            GIT_COMMIT=$(git rev-parse --short HEAD)
+            COMMITS_SINCE_TAG=$(git rev-list --count HEAD ^${LATEST_TAG} 2>/dev/null || echo "0")
+            NPM_VERSION="${BASE_VERSION}-next.${COMMITS_SINCE_TAG}.g${GIT_COMMIT}"
+            NPM_TAG="next"
+            echo "🚧 Publishing pre-release: ${NPM_VERSION}"
+          fi
+
+          echo "version=${NPM_VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${NPM_TAG}" >> $GITHUB_OUTPUT
+
+          node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json')); pkg.version = '${NPM_VERSION}'; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
+
+          echo "Updated package.json to version ${NPM_VERSION}"
+
+      - name: Check if version exists
+        id: check-exists
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          VERSION="${{ steps.version.outputs.version }}"
+
+          if npm view "${PACKAGE_NAME}@${VERSION}" version &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Version ${VERSION} already exists on npm"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Version ${VERSION} does not exist, will publish"
+          fi
+
+      - name: Publish to npm (with OIDC trusted publishing)
+        if: steps.check-exists.outputs.exists == 'false'
+        run: npm publish --tag ${{ steps.version.outputs.tag }} --provenance --access public
+
+      - name: Update dist-tag (version already exists)
+        if: steps.check-exists.outputs.exists == 'true' && steps.detect.outputs.is_tag == 'true'
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+
+          echo "Version ${VERSION} already published, updating dist-tag to ${TAG}"
+          npm dist-tag add "${PACKAGE_NAME}@${VERSION}" "${TAG}"
+
+      - name: Skip (pre-release already exists)
+        if: steps.check-exists.outputs.exists == 'true' && steps.detect.outputs.is_tag != 'true'
+        run: |
+          echo "⏭️ Pre-release version already exists, skipping"
+
+      - name: Create GitHub Release
+        if: steps.detect.outputs.is_tag == 'true'
+        run: gh release create "${{ steps.detect.outputs.trigger_name }}" --title "${{ steps.detect.outputs.trigger_name }}" --generate-notes --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}

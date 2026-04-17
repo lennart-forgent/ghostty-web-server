@@ -1,0 +1,36 @@
+{
+  "name": "ghostty-web-server",
+  "version": "0.3.0",
+  "description": "Local web server that exposes a shell PTY through a ghostty-web terminal in the browser",
+  "type": "module",
+  "bin": {
+    "ghostty-web-server": "./bin/server.js"
+  },
+  "scripts": {
+    "start": "node bin/server.js",
+    "dev": "node --watch bin/server.js --dev"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "^1.0.1",
+    "ghostty-web": "latest",
+    "ws": "^8.18.0"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "keywords": [
+    "terminal",
+    "terminal-emulator",
+    "ghostty",
+    "pty",
+    "shell",
+    "websocket",
+    "server"
+  ],
+  "license": "MIT",
+  "author": "Coder",
+  "publishConfig": {
+    "access": "public"
+  }
+}
