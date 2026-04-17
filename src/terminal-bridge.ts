@@ -23,6 +23,9 @@ interface TerminalApi {
   onTitleChange(cb: (title: string) => void): Disposable;
   onBell(cb: () => void): Disposable;
   renderer: { getMetrics(): { width: number; height: number } };
+  /** Returning true tells the lib to skip its built-in scroll / arrow-key
+   *  behavior — we use this when the program has mouse tracking enabled. */
+  attachCustomWheelEventHandler(cb: (e: WheelEvent) => boolean): void;
 }
 
 export function attachBridge(
@@ -85,26 +88,29 @@ export function attachBridge(
       e.preventDefault();
       e.stopPropagation();
     };
-    const onWheel = (e: WheelEvent) => {
-      if (!term.hasMouseTracking()) return;
+    // Wheel goes through ghostty-web's own hook so the lib's built-in scroll
+    // (which doesn't know about mouse tracking) gets suppressed when the
+    // program wants wheel-as-mouse. Returning true skips lib default.
+    term.attachCustomWheelEventHandler((e) => {
+      if (!term.hasMouseTracking()) return false;
       const c = cell(e);
-      if (!c) return;
+      if (!c) return false;
       const dir = e.deltaY > 0 ? 65 : 64;
       send(encode(dir, c.x, c.y, SGR_PRESS));
-      e.preventDefault();
-      e.stopPropagation();
-    };
+      return true;
+    });
 
     const opts = { capture: true } as const;
     container.addEventListener('mousedown', onDown, opts);
     container.addEventListener('mouseup', onUp, opts);
     container.addEventListener('mousemove', onMove, opts);
-    container.addEventListener('wheel', onWheel, { capture: true, passive: false });
     teardown.push(() => {
       container.removeEventListener('mousedown', onDown, opts);
       container.removeEventListener('mouseup', onUp, opts);
       container.removeEventListener('mousemove', onMove, opts);
-      container.removeEventListener('wheel', onWheel, opts);
+      // Reset the wheel hook so a stale terminal-bridge teardown doesn't keep
+      // the closure alive.
+      term.attachCustomWheelEventHandler(() => false);
     });
   }
 
@@ -160,7 +166,14 @@ export function attachBridge(
       } catch {}
     };
 
+    // Rate-limit: TUI apps (opencode, vim) often ring multiple bells in quick
+    // succession during animations, which would otherwise be a strobe + noise
+    // burst.
+    let lastBellAt = 0;
     const sub = term.onBell(() => {
+      const now = performance.now();
+      if (now - lastBellAt < 250) return;
+      lastBellAt = now;
       if (settings.visualBellEnabled) {
         container.classList.remove('ghostty-bell-flash');
         void container.offsetWidth; // force reflow → restart animation

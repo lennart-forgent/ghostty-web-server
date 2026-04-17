@@ -68,6 +68,15 @@ export function TerminalIsland() {
       const { init, Terminal } = (await import(/* @vite-ignore */ url)) as GhosttyModule;
       if (cancelled) return;
 
+      // Silence ghostty-web's noisy OSC warnings (color/cursor queries,
+      // hyperlinks, etc. that the WASM parser doesn't fully implement —
+      // they're informational and don't break anything).
+      const origWarn = console.warn;
+      console.warn = (...args: unknown[]) => {
+        if (typeof args[0] === 'string' && args[0].startsWith('[ghostty-vt]')) return;
+        origWarn(...args);
+      };
+
       await init();
       term = new Terminal({
         cols: 80,
