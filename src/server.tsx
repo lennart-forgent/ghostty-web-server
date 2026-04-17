@@ -162,16 +162,24 @@ new Elysia({ websocket: { idleTimeout: 30 } })
     message(ws, raw) {
       const session = (ws.data as { session?: Session }).session;
       if (!session) return;
-      const text = typeof raw === 'string' ? raw : new TextDecoder().decode(raw as ArrayBuffer);
-      if (text.startsWith('{')) {
-        try {
-          const m = JSON.parse(text);
-          if (m.type === 'resize') {
-            session.proc.terminal.resize(m.cols, m.rows);
-            return;
-          }
-        } catch {}
+
+      // Elysia auto-parses every incoming text frame as JSON: `"1"` arrives as
+      // the number 1, `'{"type":"resize",...}'` arrives as an object. Branch on
+      // the parsed shape instead of inspecting strings.
+      if (raw && typeof raw === 'object' && !(raw instanceof ArrayBuffer)) {
+        const m = raw as { type?: string; cols?: number; rows?: number };
+        if (m.type === 'resize' && typeof m.cols === 'number' && typeof m.rows === 'number') {
+          session.proc.terminal.resize(m.cols, m.rows);
+        }
+        return;
       }
+
+      const text =
+        typeof raw === 'string'
+          ? raw
+          : raw instanceof ArrayBuffer
+            ? new TextDecoder().decode(raw)
+            : String(raw);
       session.proc.terminal.write(text);
     },
     close(ws) {
