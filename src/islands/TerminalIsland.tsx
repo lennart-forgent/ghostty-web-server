@@ -73,12 +73,17 @@ export function TerminalIsland() {
       // Compute cols/rows directly from container size — fitAddon ships its
       // own 100ms ResizeObserver debounce *and* a 50ms `_isResizing` lockout,
       // both of which make drag-resize feel like it stalls.
+      // Floor at something bash can actually render a prompt in. cols=1 sends
+      // readline into a tail-spin that the buffer often can't recover from
+      // when you drag back to a normal width.
+      const MIN_COLS = 20;
+      const MIN_ROWS = 4;
       const fit = () => {
         if (!term || !ref.current) return;
         const m = term.renderer.getMetrics();
         if (!m.width || !m.height) return;
-        const cols = Math.max(1, Math.floor(ref.current.clientWidth / m.width));
-        const rows = Math.max(1, Math.floor(ref.current.clientHeight / m.height));
+        const cols = Math.max(MIN_COLS, Math.floor(ref.current.clientWidth / m.width));
+        const rows = Math.max(MIN_ROWS, Math.floor(ref.current.clientHeight / m.height));
         if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
       };
       fit();
@@ -131,10 +136,35 @@ export function TerminalIsland() {
         if (ws && ws.readyState === WebSocket.OPEN) ws.send(d);
       });
 
+      // Throttle WS resize to ~20Hz so bash's prompt redraws don't collide.
+      // After 200ms of quiet, send Ctrl+L so bash repaints the prompt from
+      // scratch — that's how we recover from any reflow artifacts left over
+      // from the drag (native Ghostty avoids them via OS-level signal
+      // coalescing, which we can't get over a network).
+      const RESIZE_MS = 50;
+      const SETTLE_MS = 200;
+      let pendingSize: { cols: number; rows: number } | null = null;
+      let lastSent = 0;
+      let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+      let settleTimer: ReturnType<typeof setTimeout> | null = null;
+      const flushResize = () => {
+        resizeTimer = null;
+        if (!pendingSize || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: 'resize', ...pendingSize }));
+        pendingSize = null;
+        lastSent = performance.now();
+      };
       term.onResize(({ cols, rows }) => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+        pendingSize = { cols, rows };
+        if (!resizeTimer) {
+          const wait = Math.max(0, RESIZE_MS - (performance.now() - lastSent));
+          resizeTimer = setTimeout(flushResize, wait);
         }
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => {
+          settleTimer = null;
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send('\x0c'); // ^L
+        }, SETTLE_MS);
       });
     })();
 
