@@ -104,6 +104,10 @@ new Elysia({ websocket: { idleTimeout: 30 } })
   .get('/client.js', () => clientResponse())
   .get('/dist/ghostty-web.js', () => file(ghosttyJs, 'text/javascript'))
   .get('/ghostty-vt.wasm', () => file(wasm, 'application/wasm'))
+  .get('/favicon.ico', () => new Response(null, { status: 204 }))
+  // Empty-module fallback for stale Vite "__vite-browser-external-*.js" stubs
+  // that ghostty-web's published bundle occasionally references.
+  .get('/dist/*', () => new Response('export {};', { headers: { 'content-type': 'text/javascript' } }))
   .get(
     '/api/sessions',
     async () => ({
